@@ -1,0 +1,44 @@
+{
+  "name": "lucia-auth-adapter-surrealdb",
+  "version": "0.0.1",
+  "description": "SurrealDB adapter for Lucia",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "module": "index.js",
+  "type": "module",
+  "files": [
+    "**/*"
+  ],
+  "scripts": {
+    "build": "rm -rf ./dist/* && tsc && cp ./package.json ./dist && cp ./README.md ./dist && cp .npmignore dist",
+    "test-main": "esno test/index.ts",
+    "package": "pnpm build && cd dist && pnpm install --no-frozen-lockfile && pnpm publish --no-git-checks --access public && cd ../"
+  },
+  "keywords": [
+    "lucia",
+    "surrealdb",
+    "lucia-auth",
+    "auth",
+    "authentication"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fernandolguevara/lucia-auth-adapter-surrealdb"
+  },
+  "author": "fernandolguevara",
+  "license": "MIT",
+  "exports": {
+    ".": "./index.js"
+  },
+  "devDependencies": {
+    "@lucia-auth/adapter-test": "^0.1.2",
+    "@types/node": "^18.11.9",
+    "dotenv": "^16.0.3",
+    "esno": "^0.16.3",
+    "typescript": "^4.8.4"
+  },
+  "dependencies": {
+    "lucia-auth": "^0.2.0",
+    "surrealdb.js": "^0.5.0"
+  }
+}
