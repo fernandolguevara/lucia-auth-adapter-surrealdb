@@ -30,7 +30,7 @@ const connect = async (args: Args): Promise<Surreal> => {
 
 	const surreal = new Surreal(args.uri, args.token);
 
-	await surreal.signin(args);
+	await surreal.signin({ user: args.user, pass: args.pass });
 
 	await surreal.use(args.ns, args.db);
 
