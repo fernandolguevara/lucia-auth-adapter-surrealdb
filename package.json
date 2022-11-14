@@ -1,6 +1,6 @@
 {
   "name": "lucia-auth-adapter-surrealdb",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "description": "SurrealDB adapter for Lucia",
   "main": "index.js",
   "types": "index.d.ts",
@@ -10,9 +10,9 @@
     "**/*"
   ],
   "scripts": {
-    "build": "rm -rf ./dist/* && tsc && cp ./package.json ./dist && cp ./README.md ./dist && cp .npmignore dist",
+    "build": "rm -rf ./dist/* && tsc && cp ./package.json ./dist && cp ./README.md ./dist && cp .npmignore dist && esno package.ts",
     "test-main": "esno test/index.ts",
-    "package": "pnpm build && cd dist && pnpm install --no-frozen-lockfile && pnpm publish --no-git-checks --access public && cd ../"
+    "package": "pnpm build && cd dist && pnpm install --no-frozen-lockfile && pnpm publish --no-git-checks --access public --registry=https://registry.npmjs.com && cd ../"
   },
   "keywords": [
     "lucia",

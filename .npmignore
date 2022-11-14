@@ -1,7 +1,6 @@
-/src
-/test
-/node_modules
+src
+test
+node_modules
 .gitignore
-.npmignore
 .DS_Store
 tsconfig.json
