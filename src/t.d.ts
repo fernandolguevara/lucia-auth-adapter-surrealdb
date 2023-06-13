@@ -1,5 +1,5 @@
 /// <reference types="lucia-auth" />
 declare namespace Lucia {
-	type Auth = any;
-	type UserAttributes = {};
+  type Auth = any;
+  type UserAttributes = {};
 }

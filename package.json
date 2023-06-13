@@ -1,6 +1,6 @@
 {
   "name": "lucia-auth-adapter-surrealdb",
-  "version": "0.0.3",
+  "version": "1.0.0",
   "description": "SurrealDB adapter for Lucia",
   "main": "index.js",
   "types": "index.d.ts",
@@ -10,9 +10,10 @@
     "**/*"
   ],
   "scripts": {
-    "build": "rm -rf ./dist/* && tsc && cp ./package.json ./dist && cp ./README.md ./dist && cp .npmignore dist && esno package.ts",
+    "build": "rm -rf ./dist/* && cp ./package.json ./dist && cp ./README.md ./dist && cp .npmignore dist && tsc && esno package.ts",
     "test-main": "esno test/index.ts",
-    "package": "pnpm build && cd dist && pnpm install --no-frozen-lockfile && pnpm publish --no-git-checks --access public --registry=https://registry.npmjs.com && cd ../"
+    "package": "pnpm build && cd dist && pnpm install --no-frozen-lockfile && pnpm publish --no-git-checks --access public --registry=https://registry.npmjs.com && cd ../",
+    "format": "prettier --plugin-search-dir . --write ."
   },
   "keywords": [
     "lucia",
@@ -31,14 +32,15 @@
     ".": "./index.js"
   },
   "devDependencies": {
-    "@lucia-auth/adapter-test": "^0.1.2",
-    "@types/node": "^18.11.9",
-    "dotenv": "^16.0.3",
+    "@lucia-auth/adapter-test": "^3.0.1",
+    "@types/node": "^20.3.0",
+    "dotenv": "^16.1.4",
     "esno": "^0.16.3",
-    "typescript": "^4.8.4"
+    "prettier": "^2.8.8",
+    "typescript": "^5.1.3"
   },
   "dependencies": {
-    "lucia-auth": "^0.2.0",
-    "surrealdb.js": "^0.5.0"
+    "lucia-auth": "^1.8.0",
+    "surrealdb.js": "^0.8.0"
   }
 }

@@ -1,315 +1,319 @@
-import type { Adapter, SessionSchema, UserSchema } from "lucia-auth";
+import type { Adapter, KeySchema, SessionSchema, UserSchema } from "lucia-auth";
 import { LuciaError } from "lucia-auth";
-import { getUpdateData } from "lucia-auth/adapter";
-import Surreal, { type Result } from "surrealdb.js";
+import Surreal from "surrealdb.js";
+
+type ConnectionOptions = ConstructorParameters<typeof Surreal>[1];
 
 type Opts = {
-	targets: {
-		user: string,
-		session: string
-	}
+  targets: {
+    user?: string;
+    session?: string;
+    key?: string;
+  };
 };
 
-export type Args = {
-	surreal: Surreal,
-	opts?: Opts
-} | {
-	uri: string;
-	token?: string;
-	user: string;
-	pass: string;
-	ns: string;
-	db: string;
-	opts?: Opts
-}
+type Args =
+  | {
+      surreal: Surreal;
+      opts?: Opts;
+    }
+  | {
+      uri: string;
+      opts?: Opts & ConnectionOptions;
+    };
 
 const connect = async (args: Args): Promise<Surreal> => {
-	if (!("uri" in args) || !("ns" in args) || !("db" in args) || !("user" in args) || !("pass" in args)) {
-		throw 'surreal:connection-args:required'
-	}
+  const opts = args.opts || {};
+  if (
+    !("uri" in args) ||
+    !("ns" in opts) ||
+    !("db" in opts) ||
+    !("user" in opts) ||
+    !("pass" in opts)
+  ) {
+    throw "surreal:connection-args:required";
+  }
 
-	const surreal = new Surreal(args.uri, args.token);
+  const surreal = new Surreal(args.uri, { ...args.opts });
 
-	await surreal.signin({ user: args.user, pass: args.pass });
+  await surreal.wait();
 
-	await surreal.use(args.ns, args.db);
+  return surreal;
+};
 
-	return surreal;
-}
+const thing = (target: string, id: string) => `${target}:${id}`;
 
-type ResultUser = Result<UserSchema[]>[];
-type ResultSession = Result<SessionSchema[]>[];
-type SessionAndUser = SessionSchema & { user: UserSchema };
-type ResultSessionAndUser = Result<SessionAndUser[]>[];
+const handleId = (target: string) =>
+  `string::replace(id, '${target}:', '') AS id`;
 
-const handleId = (target: string) => `(string::replace(id, '${target}:', '')) AS id`
+const adapter = (args: Args): Adapter => {
+  type KeySurrealSchema = Omit<KeySchema, "id"> & {
+    id: string;
+    key_id: string;
+  };
 
-const ql = (db: Surreal, targets: Opts["targets"]) => ({
-	createUser: (id: string | null,
-		{ providerId: provider_id, hashedPassword: hashed_password, attributes }: {
-			providerId: string;
-			hashedPassword: string | null;
-			attributes: Record<string, any>;
-		}) => db.create(`${targets.user}${id ? `:${id}` : ''}`, {
-			id,
-			provider_id,
-			hashed_password,
-			...attributes
-		}),
-	deleteUser: (id: string) => db.delete(`${targets.user}:${id}`),
-	updateUser: (id: string, data: any) => db.change<UserSchema>(`${targets.user}:${id}`, data),
-	userById: (userId: string) => db.query<ResultUser>(
-		`SELECT *, ${handleId(targets.user)} FROM type::table($tb)`, {
-		tb: `${targets.user}:${userId}`,
-	}),
-	userByProviderId: (providerId: string) => db.query<ResultUser>(
-		`SELECT *, ${handleId(targets.user)} FROM type::table($tb) where provider_id = $provider_id`, {
-		tb: targets.user,
-		provider_id: providerId
-	}),
-	userBySessionId: (sessionId: string) => db.query<ResultUser>(
-		`SELECT *, ${handleId(targets.session)} FROM type::table($tb) FETCH user`, {
-		tb: `${targets.session}:${sessionId}`,
-	}),
-	sessionById: <T = ResultSession>(sessionId: string) => db.query<T>(
-		`SELECT *, ${handleId(targets.session)} FROM type::table($tb) FETCH`, {
-		tb: `${targets.session}:${sessionId}`,
-	}),
-	sessionByUserId: (userId: string) => db.query<ResultSession>(
-		`SELECT *, ${handleId(targets.session)} FROM type::table($tb) WHERE user_id = $user_id FETCH user`, {
-		tb: `${targets.session}`,
-		user_id: userId
-	}),
-	deleteSession: (...sessionId: string[]) => Promise.all(sessionId.map(id => db.delete(`${targets.session}:${id}`))),
-	createSession: (id: string, data: SessionSchema) => db.create(`${targets.user}${id ? `:${id}` : ''}`, {
-		...data,
-		user: `type::thing(${targets.user}, ${data.user_id})`
-	}),
-	deleteSessionsByUserId: (userId: string) => db.query(`DELETE FROM type::table($tb) WHERE user_id = $user_id`, {
-		$tb: targets.session,
-		user_id: userId
-	})
-})
+  type RawQueryResult =
+    | string
+    | number
+    | symbol
+    | null
+    | RawQueryResult[]
+    | Record<string | number | symbol, unknown>;
 
-const checkUser = async (queries: ReturnType<typeof ql>, userId: string) => {
-	const exists = await queries.userById(userId)
+  const {
+    user: userTarget = "user",
+    session: sessionTarget = "session",
+    key: keyTarget = "key",
+  } = args.opts?.targets || {};
 
-	if (!exists?.[0]?.result?.length) {
-		throw new LuciaError("AUTH_INVALID_USER_ID");
-	}
-}
+  let surreal: Surreal;
+  const ensureClient = async (): Promise<void> => {
+    if (surreal) return;
 
-const adapter = (
-	args: Args,
-	errorHandler: (error: Error) => void = () => { }
-): Adapter => {
-	let _surreal: Promise<Surreal>;
+    if ("surreal" in args) {
+      if (args.surreal.status === 1) {
+        throw "surreal:connection:closed";
+      }
+      surreal = <Surreal>args.surreal;
+      return;
+    }
+    surreal = await connect(args);
+  };
 
-	if ("surreal" in args) {
-		_surreal = Promise.resolve(args.surreal);
-	} else {
-		_surreal = connect(args);
-	}
+  const query = async <T extends RawQueryResult = RawQueryResult>(
+    sql: string,
+    vars: any
+  ): Promise<T[]> => {
+    await ensureClient();
 
-	const targets = args.opts?.targets || { user: 'user', session: 'session' };
+    const [response] = await surreal.query<T[][]>(sql, vars);
 
-	return {
-		getUser: async (userId: string) => {
-			try {
-				const results = await ql(await _surreal, targets)
-					.userById(userId)
+    return response && response.status !== "OK" ? [] : response.result;
+  };
 
-				const response = results?.[0];
+  const getThing = async <T extends RawQueryResult = RawQueryResult>(
+    target: string,
+    id: string
+  ): Promise<T | null> => {
+    await ensureClient();
 
-				if (response?.error) {
-					throw response.error;
-				}
+    const [_thing] = await query<T>(
+      `SELECT *, ${handleId(
+        target
+      )} FROM type::table('${target}') WHERE id = $id`,
+      {
+        id: thing(target, id),
+      }
+    );
 
-				const user = response?.result?.[0];
+    return _thing || null;
+  };
 
-				return user || null;
-			} catch (error: any) {
-				errorHandler(error);
-				throw error;
-			}
-		},
-		getUserByProviderId: async (providerId: string) => {
-			try {
-				const results = await ql(await _surreal, targets)
-					.userByProviderId(providerId)
+  const deleteThing = async (target: string, id: string) => {
+    await ensureClient();
 
-				const response = results?.[0];
+    await surreal.delete(thing(target, id));
+  };
 
-				if (response?.error) {
-					throw response.error;
-				}
+  const translateKeyId = (key: KeySurrealSchema): KeySchema | null => {
+    if (!key) {
+      return null;
+    }
 
-				return response?.result?.[0] || null;
-			} catch (error: any) {
-				errorHandler(error);
-				throw error;
-			}
-		},
-		getSessionAndUserBySessionId: async (sessionId: string): Promise<{
-			user: UserSchema;
-			session: SessionSchema;
-		} | null> => {
-			try {
-				const results = await ql(await _surreal, targets)
-					.sessionById<ResultSessionAndUser>(sessionId)
+    const { key_id, ...rest } = key;
+    rest.id = key_id;
+    return rest;
+  };
 
-				const response = results?.[0];
+  const getKey = async (keyId: string): Promise<KeySchema | null> => {
+    await ensureClient();
 
-				if (response?.error) {
-					throw response.error;
-				}
+    const [key] = await query<KeySurrealSchema>(
+      `SELECT *, ${handleId(
+        keyTarget
+      )} FROM ${keyTarget} WHERE key_id = $key_id`,
+      {
+        key_id: keyId,
+      }
+    );
 
-				const result = response?.result?.[0];
+    return translateKeyId(key);
+  };
 
-				return result ? { session: { ...result }, user: result.user } : null;
-			} catch (error: any) {
-				errorHandler(error);
-				throw error;
-			}
-		},
-		getSession: async (sessionId: string) => {
-			try {
-				const results = await ql(await _surreal, targets)
-					.sessionById(sessionId)
+  const createKey = async (key: KeySchema) => {
+    try {
+      if (await getKey(key.id)) {
+        throw new LuciaError("AUTH_DUPLICATE_KEY_ID");
+      }
 
-				const response = results?.[0];
+      const values = {
+        ...key,
+        id: undefined,
+        key_id: key.id,
+        user: `type::thing(${userTarget}, ${key.user_id})`,
+      };
 
-				if (response?.error) {
-					throw response.error;
-				}
+      const [created] = await surreal.create<KeySurrealSchema>(
+        keyTarget,
+        values as any
+      );
+      return translateKeyId(created);
+    } catch (error) {
+      if (error instanceof Error && error?.message?.includes("already")) {
+        throw new LuciaError("AUTH_DUPLICATE_KEY_ID");
+      }
+      throw error;
+    }
+  };
 
-				return response?.result?.[0] || null;
-			} catch (error: any) {
-				errorHandler(error);
-				throw error;
-			}
-		},
-		getSessionsByUserId: async (userId: string) => {
-			try {
-				const results = await ql(await _surreal, targets)
-					.sessionByUserId(userId);
+  return {
+    async getUser(userId) {
+      return getThing<UserSchema>(userTarget, userId);
+    },
+    getSessionAndUserBySessionId: async (sessionId) => {
+      const session = await getThing<SessionSchema>(sessionTarget, sessionId);
+      if (!session) {
+        return null;
+      }
 
-				const response = results?.[0];
+      const user = await getThing<UserSchema>(userTarget, session.user_id);
+      if (!user) {
+        return null;
+      }
 
-				if (response?.error) {
-					throw response.error;
-				}
+      return {
+        user,
+        session,
+      };
+    },
+    getSession: async (sessionId) => {
+      return getThing<SessionSchema>(sessionTarget, sessionId);
+    },
+    getSessionsByUserId: async (userId) => {
+      return query<SessionSchema>(
+        `SELECT *, ${handleId(
+          sessionTarget
+        )} FROM ${sessionTarget} WHERE user_id = $user_id`,
+        { user_id: userId }
+      );
+    },
+    setUser: async (userId, userAttributes, key) => {
+      await ensureClient();
 
-				return response?.result;
-			} catch (error: any) {
-				errorHandler(error);
-				throw error;
-			}
-		},
-		setUser: async (userId: string | null, data: {
-			providerId: string;
-			hashedPassword: string | null;
-			attributes: Record<string, any>;
-		}): Promise<UserSchema> => {
-			try {
-				const response = await ql(await _surreal, targets)
-					.createUser(userId, data);
+      if (key && (await getKey(key.id))) {
+        throw new LuciaError("AUTH_DUPLICATE_KEY_ID");
+      }
 
-				if (response?.id) {
-					response.id = response?.id.replace('user:', '')
-				}
+      const [user] = await surreal.create<UserSchema>(
+        thing(userTarget, userId),
+        {
+          ...userAttributes,
+          id: userId,
+        }
+      );
 
-				return response;
-			} catch (error: { message?: string } & any) {
-				if (error?.message?.includes("provider_id") && error?.message?.includes("already contains")) {
-					throw new LuciaError("AUTH_DUPLICATE_PROVIDER_ID");
-				}
-				errorHandler(error);
-				throw error;
-			}
-		},
-		deleteUser: async (userId: string) => {
-			try {
-				await ql(await _surreal, targets)
-					.deleteUser(userId);
-			} catch (error: any) {
-				errorHandler(error);
-				throw error;
-			}
-		},
-		setSession: async (sessionId, data) => {
-			try {
-				const _ql = ql(await _surreal, targets);
+      user.id = user?.id ? user?.id.replace(`${userTarget}:`, "") : user?.id;
 
-				await checkUser(_ql, data.userId)
+      if (key) {
+        await createKey(key);
+      }
 
-				await _ql
-					.createSession(sessionId, {
-						id: sessionId,
-						expires: data.expires,
-						idle_expires: data.idlePeriodExpires,
-						user_id: data.userId
-					});
-			} catch (error: any) {
-				// if (error.details.includes("(id)") && error.details.includes("already exists.")) {
-				// 	throw new LuciaError("AUTH_DUPLICATE_SESSION_ID");
-				// }
-				if (!(error instanceof LuciaError)) {
-					errorHandler(error);
-				}
-				throw error;
-			}
-		},
-		deleteSession: async (...sessionIds) => {
-			try {
-				await ql(await _surreal, targets)
-					.deleteSession(...sessionIds);
-			} catch (error: any) {
-				errorHandler(error);
-				throw error;
-			}
-		},
-		deleteSessionsByUserId: async (userId) => {
-			try {
-				await ql(await _surreal, targets)
-					.deleteSessionsByUserId(userId);
-			} catch (error: any) {
-				errorHandler(error);
-				throw error;
-			}
-		},
-		updateUser: async (userId, newData: {
-			providerId?: string | null;
-			hashedPassword?: string | null;
-			attributes?: Record<string, any>;
-		}) => {
-			try {
-				const _ql = ql(await _surreal, targets);
+      return user;
+    },
+    async deleteUser(userId) {
+      await deleteThing(userTarget, userId);
+    },
+    setSession: async (session) => {
+      await ensureClient();
 
-				await checkUser(_ql, userId)
+      const userDoc = await getThing<UserSchema>(userTarget, session.user_id);
+      if (!userDoc) throw new LuciaError("AUTH_INVALID_USER_ID");
+      try {
+        await surreal.create(sessionTarget, {
+          ...session,
+          user: `type::thing(${userTarget}, ${session.user_id})`,
+        });
+      } catch (error) {
+        if (error instanceof Error && error?.message?.includes("already")) {
+          throw new LuciaError("AUTH_DUPLICATE_SESSION_ID");
+        }
+        throw error;
+      }
+    },
+    deleteSession: async (sessionId) => {
+      await deleteThing(sessionTarget, sessionId);
+    },
+    deleteSessionsByUserId: async (userId) => {
+      await ensureClient();
 
-				const dbData = getUpdateData(newData);
+      await surreal.query(
+        `DELETE FROM type::table($tb) WHERE user_id = $user_id`,
+        {
+          tb: sessionTarget,
+          user_id: userId,
+        }
+      );
+    },
+    updateUserAttributes: async (userId, attributes) => {
+      await ensureClient();
 
-				const response = await _ql
-					.updateUser(userId, dbData);
+      const user = await getThing(userTarget, userId);
 
-				if (response && "id" in response && response.id) {
-					response.id = response?.id.replace('user:', '')
-				}
+      if (!user) throw new LuciaError("AUTH_INVALID_USER_ID");
 
-				return response as any;
-			} catch (error: { message?: string } & any) {
-				if (error?.message?.includes("provider_id") && error?.message?.includes("already contains")) {
-					throw new LuciaError("AUTH_DUPLICATE_PROVIDER_ID");
-				}
-				if (!(error instanceof LuciaError)) {
-					errorHandler(error);
-				}
-				throw error;
+      await surreal.merge(thing(userTarget, userId), attributes);
 
-			}
-		}
-	};
+      return (await getThing<UserSchema>(userTarget, userId)) || void 0;
+    },
+    getKey: async (keyId) => {
+      return getKey(keyId);
+    },
+    setKey: async (key) => {
+      const user = await getThing<UserSchema>(userTarget, key.user_id);
+      if (!user) throw new LuciaError("AUTH_INVALID_USER_ID");
+
+      await createKey(key);
+    },
+    getKeysByUserId: async (userId) => {
+      return query<KeySurrealSchema>(
+        `SELECT *, ${handleId(
+          keyTarget
+        )} FROM ${keyTarget} WHERE user_id = $user_id`,
+        { user_id: userId }
+      ).then((keys) => keys.map((k) => translateKeyId(k) as KeySchema));
+    },
+    updateKeyPassword: async (key, hashedPassword) => {
+      if (!(await getKey(key))) {
+        throw new LuciaError("AUTH_INVALID_KEY_ID");
+      }
+
+      await surreal.query(
+        `UPDATE ${keyTarget} SET hashed_password = '${hashedPassword}' WHERE key_id = $key_id`,
+        {
+          key_id: key,
+        }
+      );
+
+      return (await getKey(key)) || void 0;
+    },
+    deleteKeysByUserId: async (userId) => {
+      ensureClient();
+
+      await surreal.query(`DELETE FROM ${keyTarget} WHERE user_id = $user_id`, {
+        user_id: userId,
+      });
+    },
+    deleteNonPrimaryKey: async (keyId) => {
+      ensureClient();
+
+      await surreal.query(
+        `DELETE FROM ${keyTarget} WHERE key_id = $key_id AND primary_key = false`,
+        {
+          key_id: keyId,
+        }
+      );
+    },
+  };
 };
 
 export default adapter;
